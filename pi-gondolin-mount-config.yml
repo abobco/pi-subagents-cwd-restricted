@@ -1,0 +1,38 @@
+# Read-only system-context mounts for the Pi coding agent.
+#
+# SECURITY MODEL:
+#   - The only host-WRITABLE location inside the VM is /workspace (this repo).
+#   - Every mount below is READ-ONLY (:ro) -> wrapped in a ReadonlyProvider,
+#     so writes to /host/** fail.
+#   - Anything the agent writes outside /workspace and these mounts stays in the
+#     VM's ephemeral filesystem and is discarded on shutdown.
+#   - This file is automatically MASKED from the VM, so the agent cannot see or
+#     edit its own permissions.
+#
+# To change scope: add/remove :ro lines here (never use :rw). Keep secrets out
+# (~/.ssh, ~/.config/glab-cli, ~/.config/github-copilot, etc.).
+
+mounts:
+  # System-wide config. Read as your user, so root-only files (e.g. /etc/shadow)
+  # stay inaccessible. Covers /etc/wsl.conf, apt sources, os-release, etc.
+  - /etc:/host/etc:ro
+
+  # Curated ~/.config app configs. Token-bearing dirs (glab-cli, github-copilot)
+  # are intentionally NOT mounted.
+  - /home/abobco/.config/nvim:/host/config/nvim:ro
+  - /home/abobco/.config/kanata:/host/config/kanata:ro
+  - /home/abobco/.config/kitty:/host/config/kitty:ro
+  - /home/abobco/.config/herdr:/host/config/herdr:ro
+  - /home/abobco/.config/zellij:/host/config/zellij:ro
+  - /home/abobco/.config/lazygit:/host/config/lazygit:ro
+  - /home/abobco/.config/fish:/host/config/fish:ro
+  - /home/abobco/.config/niri:/host/config/niri:ro
+  - /home/abobco/.config/git:/host/config/git:ro
+  - /home/abobco/.config/bat:/host/config/bat:ro
+  - /home/abobco/.config/systemd:/host/config/systemd:ro
+  - /home/abobco/.pi:/host/.pi:ro
+  - /home/abobco/.local/share:/host/.local/share:ro
+
+  # Loose home dotfiles + generated system inventory, staged by refresh-context.sh
+  # (kept outside the workspace so it is only ever reachable read-only).
+  - /home/abobco/pi-system-context:/host/context:ro

@@ -51,7 +51,7 @@ import { intersectSubagentCapabilityCeilings, resolveCurrentSubagentCapabilityCe
 import { isAgentContractV1 } from "../shared/agent-contract.ts";
 import { finalizeSingleOutput, injectSingleOutputInstruction, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { cleanupStructuredOutputRuntime, createStructuredOutputRuntime } from "../shared/structured-output.ts";
-import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, readStatus, resolveChildCwd, sumResultsCost, sumResultsUsage } from "../../shared/utils.ts";
+import { compactForegroundDetails, CwdEscapeError, getSingleResultOutput, mapConcurrent, readStatus, resolveChildCwd, resolveContainedCwd, sumResultsCost, sumResultsUsage } from "../../shared/utils.ts";
 import { DEFAULT_GLOBAL_CONCURRENCY_LIMIT, Semaphore } from "../shared/parallel-utils.ts";
 import { formatParallelHandoffError, formatParallelHandoffReference, parallelHandoffPath, writeParallelHandoffGroup } from "../shared/parallel-handoff.ts";
 import { summarizeContextModes, type ContextMode, type ContextSummary } from "../shared/context-mode.ts";
@@ -256,7 +256,10 @@ interface ExecutionContextData {
 }
 
 function resolveRequestedCwd(runtimeCwd: string, requestedCwd: string | undefined): string {
-	return requestedCwd ? path.resolve(runtimeCwd, requestedCwd) : runtimeCwd;
+	// Contain the caller-supplied cwd to the workspace root. This is the base cwd for
+	// the whole run, so an escape here would anchor foreground subagents (and their
+	// nested children, which clamp relative to this base) outside the sandbox.
+	return resolveContainedCwd(runtimeCwd, requestedCwd);
 }
 
 function getForegroundControl(state: SubagentState, runId: string | undefined) {
@@ -3490,7 +3493,19 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		deps.state.foregroundControls ??= new Map();
 		deps.state.lastForegroundControlId ??= null;
 		const requestParams = omitExecutionModeActionAlias(params);
-		const requestCwd = resolveRequestedCwd(ctx.cwd, requestParams.cwd);
+		let requestCwd: string;
+		try {
+			requestCwd = resolveRequestedCwd(ctx.cwd, requestParams.cwd);
+		} catch (error) {
+			if (error instanceof CwdEscapeError) {
+				return {
+					content: [{ type: "text", text: error.message }],
+					isError: true,
+					details: { mode: "single" as const, results: [] },
+				};
+			}
+			throw error;
+		}
 		const paramsWithResolvedCwd = requestParams.cwd === undefined ? requestParams : { ...requestParams, cwd: requestCwd };
 		const action = paramsWithResolvedCwd.action;
 		let requestParentModel: ParentModel | undefined;

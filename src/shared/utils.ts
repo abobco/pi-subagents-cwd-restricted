@@ -105,13 +105,78 @@ function getErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Raised when a requested working directory resolves outside the workspace root.
+ * Callers that must surface tampering (e.g. the top-level subagent request) throw
+ * this instead of silently clamping.
+ */
+export class CwdEscapeError extends Error {
+	readonly attemptedCwd: string;
+	readonly baseCwd: string;
+	constructor(attemptedCwd: string, baseCwd: string) {
+		super(`Requested cwd '${attemptedCwd}' escapes the workspace root '${baseCwd}'`);
+		this.name = "CwdEscapeError";
+		this.attemptedCwd = attemptedCwd;
+		this.baseCwd = baseCwd;
+	}
+}
+
+/**
+ * Resolve symlinks on the deepest existing ancestor of `target`, preserving any
+ * not-yet-existing trailing segments. `path.relative`/`path.resolve` are purely
+ * lexical, so without this a symlink inside the base (e.g. /workspace/link -> /etc)
+ * would defeat the containment check below.
+ */
+function realpathBestEffort(target: string): string {
+	let current = target;
+	const suffix: string[] = [];
+	while (true) {
+		try {
+			const real = fs.realpathSync.native(current);
+			return suffix.length ? path.join(real, ...suffix.reverse()) : real;
+		} catch {
+			const parent = path.dirname(current);
+			if (parent === current) return target; // hit the filesystem root without resolving; fall back to lexical
+			suffix.push(path.basename(current));
+			current = parent;
+		}
+	}
+}
+
+/**
+ * True when `resolvedChild` stays within `baseCwd` after both sides have their
+ * symlinks canonicalized. The containment decision is made on canonical paths so
+ * a symlink escape is caught; the caller keeps returning the un-canonicalized path
+ * to avoid perturbing sibling path math elsewhere.
+ */
+function isContainedCwd(baseCwd: string, resolvedChild: string): boolean {
+	const base = realpathBestEffort(baseCwd);
+	const resolved = realpathBestEffort(resolvedChild);
+	const rel = path.relative(base, resolved);
+	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+/**
+ * Clamp a child working directory to `baseCwd`, silently falling back to `baseCwd`
+ * when the child escapes. Used for chain/task/step cwds nested under an already
+ * validated base, where quiet containment is the established contract.
+ */
 export function resolveChildCwd(baseCwd: string, childCwd: string | undefined): string {
 	if (!childCwd) return baseCwd;
 	const resolved = path.isAbsolute(childCwd) ? childCwd : path.resolve(baseCwd, childCwd);
-	// Clamp to baseCwd: reject any path that escapes the parent working directory.
-	const rel = path.relative(baseCwd, resolved);
-	if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return resolved;
-	return baseCwd;
+	return isContainedCwd(baseCwd, resolved) ? resolved : baseCwd;
+}
+
+/**
+ * Resolve a caller-supplied working directory, throwing {@link CwdEscapeError} if it
+ * escapes `baseCwd`. Use at request entry points where an escape attempt must be
+ * rejected and reported rather than silently redirected.
+ */
+export function resolveContainedCwd(baseCwd: string, childCwd: string | undefined): string {
+	if (!childCwd) return baseCwd;
+	const resolved = path.isAbsolute(childCwd) ? childCwd : path.resolve(baseCwd, childCwd);
+	if (!isContainedCwd(baseCwd, resolved)) throw new CwdEscapeError(childCwd, baseCwd);
+	return resolved;
 }
 
 function isNotFoundError(error: unknown): boolean {
