@@ -107,7 +107,11 @@ function getErrorMessage(error: unknown): string {
 
 export function resolveChildCwd(baseCwd: string, childCwd: string | undefined): string {
 	if (!childCwd) return baseCwd;
-	return path.isAbsolute(childCwd) ? childCwd : path.resolve(baseCwd, childCwd);
+	const resolved = path.isAbsolute(childCwd) ? childCwd : path.resolve(baseCwd, childCwd);
+	// Clamp to baseCwd: reject any path that escapes the parent working directory.
+	const rel = path.relative(baseCwd, resolved);
+	if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return resolved;
+	return baseCwd;
 }
 
 function isNotFoundError(error: unknown): boolean {
